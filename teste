@@ -1,0 +1,599 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Análise de Performance de Fornecedores - Casa das Tintas</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/xlsx@0.17.0/dist/xlsx.full.min.js"></script>
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInWithCustomToken, signInAnonymously } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, doc, setDoc, getDoc, collection, onSnapshot, query, where, addDoc, getDocs } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        window.firebaseDependencies = { initializeApp, getAuth, signInWithCustomToken, signInAnonymously, getFirestore, doc, setDoc, getDoc, collection, onSnapshot, query, where, addDoc, getDocs };
+    </script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
+    <!-- Chosen Palette: Casa das Tintas Vibrant Palette -->
+    <!-- Application Structure Plan: A dashboard-style application was chosen to provide a clear, hierarchical view of the data. It starts with high-level Key Performance Indicators (KPIs) for an immediate snapshot. The core of the app is a single, scrollable page with two primary tables, separating suppliers with high DDE from those with efficient DDE. This structure facilitates direct comparison and prevents information overload by presenting all relevant data in a focused layout. -->
+    <!-- Visualization & Content Choices:
+        - KPIs (HTML cards): Goal: Inform. Provides an instant summary of the most critical metrics.
+        - Sortable Tables (HTML/JS): Goal: Organize/Explore. Offers a granular view of the entire dataset, allowing users to sort and analyze the data according to their specific needs.
+        - Calculated Column: Goal: Compare/Inform. The new "% de Estoque Sem Giro" column provides a critical ratio for comparing supplier quality, offering an immediate insight into stagnant inventory issues relative to total stock value.
+    -->
+    <!-- CONFIRMATION: NO SVG graphics used. NO Mermaid JS used. -->
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #f8f9fa;
+        }
+        .main-title {
+            color: #005f73;
+        }
+        .kpi-card {
+            background-color: white;
+            border-radius: 0.75rem;
+            box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1);
+            transition: transform 0.2s;
+        }
+        .kpi-card:hover {
+            transform: translateY(-5px);
+        }
+        .kpi-value {
+            color: #005f73;
+        }
+        .kpi-label {
+            color: #4a5568;
+        }
+        table thead th {
+            cursor: pointer;
+            user-select: none;
+        }
+        table thead th:hover {
+            background-color: #e2e8f0;
+        }
+        .sort-indicator {
+            display: inline-block;
+            margin-left: 5px;
+            opacity: 0.5;
+        }
+        .ai-output-card {
+            background-color: #f0f4f8;
+            border-left: 4px solid #f48c06;
+            border-radius: 0.5rem;
+            padding: 1.5rem;
+            white-space: pre-wrap;
+            line-height: 1.6;
+            color: #1a202c;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+    </style>
+</head>
+<body class="bg-gray-50 text-gray-800">
+
+    <header class="bg-white shadow-md p-4">
+        <div class="container mx-auto flex items-center">
+            <img id="brandLogo" src="data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 40' width='100' height='40'><rect width='100' height='40' fill='%23005f73'/><text x='50' y='25' font-family='sans-serif' font-size='12' fill='%23FFF' text-anchor='middle' alignment-baseline='middle'>Logo</text></svg>" alt="Logo Casa das Tintas" class="h-10 mr-2">
+            <h1 class="text-xl md:text-3xl font-bold main-title">Painel de Análise de Fornecedores</h1>
+        </div>
+    </header>
+
+    <main class="container mx-auto p-4 md:p-8">
+
+        <section id="file-importer" class="mb-8 p-6 bg-white rounded-lg shadow-lg">
+            <h2 class="text-2xl font-bold text-gray-700 mb-4">Importar Planilha e Logo</h2>
+            <div class="mb-4">
+                <p class="text-gray-600 mb-2">Escolha seu arquivo de planilha (.xls, .xlsx):</p>
+                <input type="file" id="fileInput" class="block w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-orange-50 file:text-orange-600 hover:file:bg-orange-100"/>
+            </div>
+            <div>
+                <p class="text-gray-600 mb-2">Selecione sua logo (.jpg, .png, etc):</p>
+                <input type="file" id="logoInput" accept="image/*" class="block w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-orange-50 file:text-orange-600 hover:file:bg-orange-100"/>
+            </div>
+            <button id="saveButton" class="w-full mt-4 bg-orange-500 hover:bg-orange-600 text-white font-bold py-2 px-4 rounded-full transition-colors duration-200">Salvar e Compartilhar</button>
+            <div id="loadingMessage" class="mt-4 text-center text-gray-500" style="display: none;">Salvando dados...</div>
+            <div id="shareSection" class="mt-4" style="display: none;">
+                <p class="text-gray-600 mb-2">Link para Compartilhar:</p>
+                <div class="flex items-center space-x-2">
+                    <input type="text" id="shareLink" readonly class="flex-grow p-2 border rounded-md text-sm bg-gray-100"/>
+                    <button id="copyButton" class="bg-gray-200 hover:bg-gray-300 text-gray-800 font-bold py-2 px-4 rounded-full text-sm transition-colors duration-200">Copiar Link</button>
+                </div>
+            </div>
+        </section>
+
+        <section id="kpi-section" class="mb-8" style="display: none;">
+            <h2 class="text-2xl font-bold text-gray-700 mb-4">Visão Geral do Estoque</h2>
+            <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-6">
+                <div class="kpi-card p-6 text-center">
+                    <p class="kpi-label text-lg font-semibold">Total em Estoque Sem Giro</p>
+                    <p id="totalStagnantStock" class="kpi-value text-2xl font-bold mt-2">R$ 0,00</p>
+                </div>
+                <div class="kpi-card p-6 text-center">
+                    <p class="kpi-label text-lg font-semibold">DDE Geral</p>
+                    <p id="averageDDE" class="kpi-value text-2xl font-bold mt-2">0 dias</p>
+                </div>
+                <div class="kpi-card p-6 text-center">
+                    <p class="kpi-label text-lg font-semibold">Fornecedores Acima da Meta DDE</p>
+                    <p id="suppliersOverDDE" class="kpi-value text-2xl font-bold mt-2">0</p>
+                     <p class="text-sm text-gray-500 mt-1">(Meta DDE: 90 dias)</p>
+                </div>
+                <div class="kpi-card p-6 text-center">
+                    <p class="kpi-label text-lg font-semibold">Estoque Total a Custo</p>
+                    <p id="totalInventoryCost" class="kpi-value text-2xl font-bold mt-2">R$ 0,00</p>
+                </div>
+                <div class="kpi-card p-6 text-center">
+                    <p class="kpi-label text-lg font-semibold">Média Faturamento Custo</p>
+                    <p id="totalRevenueCost" class="kpi-value text-2xl font-bold mt-2">R$ 0,00</p>
+                </div>
+                <div class="kpi-card p-6 text-center">
+                    <p class="kpi-label text-lg font-semibold">Faturamento Médio</p>
+                    <p id="totalRevenuePrice" class="kpi-value text-2xl font-bold mt-2">R$ 0,00</p>
+                </div>
+            </div>
+        </section>
+
+        <section id="ai-section" class="mb-8 p-6 bg-white rounded-lg shadow-lg" style="display: none;">
+            <h2 class="text-2xl font-bold text-gray-700 mb-4">Análise com IA ✨</h2>
+            <p class="text-gray-600 mb-6">Utilize a inteligência artificial para obter insights e recomendações estratégicas com base nos dados importados.</p>
+            <div class="flex flex-col sm:flex-row gap-4 mb-6">
+                <button id="generateSummaryBtn" class="w-full bg-blue-500 hover:bg-blue-600 text-white font-bold py-2 px-4 rounded-full transition-colors duration-200">Gerar Resumo da Análise ✨</button>
+                <button id="generateRecommendationsBtn" class="w-full bg-green-500 hover:bg-green-600 text-white font-bold py-2 px-4 rounded-full transition-colors duration-200">Gerar Recomendações Estratégicas ✨</button>
+            </div>
+            <div id="aiOutput" class="ai-output-card" style="display: none;">
+                <p id="aiContent" class="text-sm"></p>
+                <div id="aiLoading" class="flex justify-center items-center mt-4" style="display:none;">
+                    <div class="w-8 h-8 border-4 border-blue-200 border-dashed rounded-full animate-spin"></div>
+                    <p class="ml-4 text-gray-500">Gerando insights...</p>
+                </div>
+            </div>
+        </section>
+
+        <section id="ddeHighAnalysis" class="mb-12" style="display: none;">
+            <div class="bg-white p-6 rounded-lg shadow-lg">
+                <h2 class="text-2xl font-bold text-gray-700 mb-2">Fornecedores com DDE Alto (> 90 dias)</h2>
+                <p class="text-gray-600 mb-6">Esta tabela detalha os fornecedores cujos produtos demoram mais tempo para serem vendidos, impactando diretamente o capital de giro.</p>
+                <div class="overflow-x-auto mt-8">
+                    <table class="min-w-full bg-white">
+                        <thead class="bg-gray-100">
+                            <tr>
+                                <th class="py-3 px-4 text-left font-semibold text-gray-600" data-sort="Fornecedor">Fornecedor <span class="sort-indicator"></span></th>
+                                <th class="py-3 px-4 text-right font-semibold text-gray-600" data-sort="DDE">DDE (dias) <span class="sort-indicator"></span></th>
+                                <th class="py-3 px-4 text-right font-semibold text-gray-600" data-sort="Estoque Custo">Custo do Estoque <span class="sort-indicator"></span></th>
+                                <th class="py-3 px-4 text-right font-semibold text-gray-600" data-sort="Estoque sem giro">Estoque Sem Giro <span class="sort-indicator"></span></th>
+                                <th class="py-3 px-4 text-right font-semibold text-gray-600" data-sort="Estoque sem giro sobre o estoque total">% Estoque Sem Giro <span class="sort-indicator"></span></th>
+                            </tr>
+                        </thead>
+                        <tbody id="ddeHighTableBody">
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </section>
+
+        <section id="ddeEfficientAnalysis" class="mb-12" style="display: none;">
+            <div class="bg-white p-6 rounded-lg shadow-lg">
+                <h2 class="text-2xl font-bold text-gray-700 mb-2">Fornecedores com DDE Eficiente (<= 90 dias)</h2>
+                <p class="text-gray-600 mb-6">Esta tabela detalha os fornecedores que estão dentro da nossa meta de DDE, indicando um bom giro de estoque. São parceiros de sucesso a serem reconhecidos e mantidos.</p>
+                <div class="overflow-x-auto mt-8">
+                    <table class="min-w-full bg-white">
+                        <thead class="bg-gray-100">
+                            <tr>
+                                <th class="py-3 px-4 text-left font-semibold text-gray-600" data-sort="Fornecedor">Fornecedor <span class="sort-indicator"></span></th>
+                                <th class="py-3 px-4 text-right font-semibold text-gray-600" data-sort="DDE">DDE (dias) <span class="sort-indicator"></span></th>
+                                <th class="py-3 px-4 text-right font-semibold text-gray-600" data-sort="Estoque Custo">Custo do Estoque <span class="sort-indicator"></span></th>
+                                <th class="py-3 px-4 text-right font-semibold text-gray-600" data-sort="Estoque sem giro">Estoque Sem Giro <span class="sort-indicator"></span></th>
+                                <th class="py-3 px-4 text-right font-semibold text-gray-600" data-sort="Estoque sem giro sobre o estoque total">% Estoque Sem Giro <span class="sort-indicator"></span></th>
+                            </tr>
+                        </thead>
+                        <tbody id="ddeEfficientTableBody">
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </section>
+
+    </main>
+
+    <footer class="bg-white mt-12 py-4 border-t">
+        <div class="container mx-auto text-center text-gray-500 text-sm">
+            <p>&copy; 2025 Casa das Tintas. Painel de Análise de Performance.</p>
+        </div>
+    </footer>
+
+    <script>
+        document.addEventListener('DOMContentLoaded', async function () {
+            let db, auth;
+            let supplierData = [];
+            let logoData = null;
+
+            const { initializeApp, getAuth, signInWithCustomToken, signInAnonymously, getFirestore, doc, setDoc, getDoc, collection } = window.firebaseDependencies;
+
+            const firebaseConfig = JSON.parse(typeof __firebase_config !== 'undefined' ? __firebase_config : '{}');
+            const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+            
+            try {
+                const app = initializeApp(firebaseConfig);
+                auth = getAuth(app);
+                db = getFirestore(app);
+                if (typeof __initial_auth_token !== 'undefined') {
+                    await signInWithCustomToken(auth, __initial_auth_token);
+                } else {
+                    await signInAnonymously(auth);
+                }
+            } catch (e) {
+                console.error("Firebase initialization failed:", e);
+                return;
+            }
+
+            const fileInput = document.getElementById('fileInput');
+            const logoInput = document.getElementById('logoInput');
+            const brandLogo = document.getElementById('brandLogo');
+            const saveButton = document.getElementById('saveButton');
+            const loadingMessage = document.getElementById('loadingMessage');
+            const shareSection = document.getElementById('shareSection');
+            const shareLinkInput = document.getElementById('shareLink');
+            const copyButton = document.getElementById('copyButton');
+            const importerSection = document.getElementById('file-importer');
+            const kpiSection = document.getElementById('kpi-section');
+            const aiSection = document.getElementById('ai-section');
+            const ddeHighSection = document.getElementById('ddeHighAnalysis');
+            const ddeEfficientSection = document.getElementById('ddeEfficientAnalysis');
+            const generateSummaryBtn = document.getElementById('generateSummaryBtn');
+            const generateRecommendationsBtn = document.getElementById('generateRecommendationsBtn');
+            const aiOutput = document.getElementById('aiOutput');
+            const aiContent = document.getElementById('aiContent');
+            const aiLoading = document.getElementById('aiLoading');
+
+            const urlParams = new URLSearchParams(window.location.search);
+            const sessionId = urlParams.get('session_id');
+
+            const hideAllSections = () => {
+                kpiSection.style.display = 'none';
+                aiSection.style.display = 'none';
+                ddeHighSection.style.display = 'none';
+                ddeEfficientSection.style.display = 'none';
+            };
+
+            if (sessionId) {
+                importerSection.style.display = 'block';
+                hideAllSections();
+                loadingMessage.style.display = 'block';
+                loadingMessage.textContent = 'Carregando dados...';
+                
+                try {
+                    const sessionDocRef = doc(db, 'artifacts', appId, 'public', 'data', 'analysis_sessions', sessionId);
+                    const docSnap = await getDoc(sessionDocRef);
+                    if (docSnap.exists()) {
+                        const data = docSnap.data();
+                        processData(data.spreadsheetData);
+                        if (data.logoData) {
+                            brandLogo.src = data.logoData;
+                        }
+                    } else {
+                        throw new Error("Sessão não encontrada.");
+                    }
+                } catch (e) {
+                    console.error("Erro ao carregar sessão:", e);
+                    loadingMessage.textContent = 'Erro ao carregar os dados. Por favor, recarregue a página ou importe um novo arquivo.';
+                } finally {
+                    loadingMessage.style.display = 'none';
+                }
+            } else {
+                importerSection.style.display = 'block';
+                hideAllSections();
+            }
+
+            fileInput.addEventListener('change', handleFile, false);
+            logoInput.addEventListener('change', handleLogo, false);
+            saveButton.addEventListener('click', saveAndShare, false);
+            copyButton.addEventListener('click', () => {
+                shareLinkInput.select();
+                try {
+                    const successful = document.execCommand('copy');
+                    if (successful) {
+                        copyButton.textContent = 'Copiado!';
+                        setTimeout(() => copyButton.textContent = 'Copiar Link', 2000);
+                    } else {
+                        console.error('Falha ao copiar usando execCommand');
+                        copyButton.textContent = 'Erro!';
+                        setTimeout(() => copyButton.textContent = 'Copiar Link', 2000);
+                    }
+                } catch (err) {
+                    console.error('Erro ao copiar:', err);
+                }
+            }, false);
+
+            generateSummaryBtn.addEventListener('click', () => callGemini('summary'));
+            generateRecommendationsBtn.addEventListener('click', () => callGemini('recommendations'));
+
+            function handleFile(e) {
+                const files = e.target.files;
+                if (files.length === 0) return;
+                const file = files[0];
+                const reader = new FileReader();
+
+                reader.onload = function(e) {
+                    const data = new Uint8Array(e.target.result);
+                    const workbook = XLSX.read(data, { type: 'array' });
+                    const sheetName = workbook.SheetNames[0];
+                    const sheet = workbook.Sheets[sheetName];
+                    supplierData = XLSX.utils.sheet_to_json(sheet);
+                    processData(supplierData);
+                };
+                reader.readAsArrayBuffer(file);
+            }
+
+            function handleLogo(e) {
+                const files = e.target.files;
+                if (files.length === 0) return;
+                const file = files[0];
+                const reader = new FileReader();
+
+                reader.onload = function(e) {
+                    logoData = e.target.result;
+                    brandLogo.src = logoData;
+                };
+                reader.readAsDataURL(file);
+            }
+
+            async function saveAndShare() {
+                if (!supplierData.length) {
+                    alert("Por favor, importe a planilha antes de salvar.");
+                    return;
+                }
+
+                saveButton.style.display = 'none';
+                loadingMessage.style.display = 'block';
+                
+                try {
+                    const sessionDocRef = doc(collection(db, 'artifacts', appId, 'public', 'data', 'analysis_sessions'));
+                    const dataToSave = {
+                        spreadsheetData: supplierData,
+                        logoData: logoData,
+                        timestamp: new Date(),
+                        ownerId: auth.currentUser.uid
+                    };
+                    await setDoc(sessionDocRef, dataToSave);
+                    
+                    const shareUrl = `${window.location.origin}${window.location.pathname}?session_id=${sessionDocRef.id}`;
+                    shareLinkInput.value = shareUrl;
+                    shareSection.style.display = 'block';
+
+                } catch (e) {
+                    console.error("Erro ao salvar os dados:", e);
+                    alert("Erro ao salvar os dados. Tente novamente.");
+                    saveButton.style.display = 'block';
+                } finally {
+                    loadingMessage.style.display = 'none';
+                }
+            }
+
+            function processData(data) {
+                supplierData = data;
+                updateKPIs();
+                initDDEHighView();
+                initDDEEfficientView();
+                kpiSection.style.display = 'block';
+                aiSection.style.display = 'block';
+                ddeHighSection.style.display = 'block';
+                ddeEfficientSection.style.display = 'block';
+            }
+
+            const formatCurrency = (value) => {
+                if (typeof value !== 'number' || isNaN(value)) return 'R$ 0,00';
+                return new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(value);
+            };
+            const formatNumber = (value) => {
+                if (typeof value !== 'number' || isNaN(value)) return '0';
+                return new Intl.NumberFormat('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(value);
+            };
+             const formatPercentage = (value) => {
+                if (typeof value !== 'number' || isNaN(value) || !isFinite(value)) return '0,00%';
+                return new Intl.NumberFormat('pt-BR', { style: 'percent', minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(value);
+            };
+
+            function updateKPIs() {
+                const totalRow = supplierData[supplierData.length - 1];
+                if (!totalRow || totalRow['Estoque sem giro'] === undefined) {
+                    return;
+                }
+                
+                document.getElementById('totalStagnantStock').textContent = formatCurrency(totalRow['Estoque sem giro']);
+                
+                const ddeGeral = (totalRow['Estoque Custo'] / totalRow['Média Faturamento Custo']) * 30;
+                document.getElementById('averageDDE').textContent = `${formatNumber(ddeGeral)} dias`;
+
+                const suppliersOverDDE = supplierData.slice(0, -1).filter(item => item.DDE > 90).length;
+                document.getElementById('suppliersOverDDE').textContent = suppliersOverDDE;
+                
+                document.getElementById('totalInventoryCost').textContent = formatCurrency(totalRow['Estoque Custo']);
+                document.getElementById('totalRevenueCost').textContent = formatCurrency(totalRow['Média Faturamento Custo']);
+                document.getElementById('totalRevenuePrice').textContent = formatCurrency(totalRow['Faturamento médio']);
+            }
+
+            function populateTable(tableId, data, columns) {
+                const tableBody = document.getElementById(tableId);
+                tableBody.innerHTML = '';
+                data.forEach(item => {
+                    const row = document.createElement('tr');
+                    row.className = 'border-b hover:bg-gray-50';
+                    columns.forEach(col => {
+                        const cell = document.createElement('td');
+                        cell.className = 'py-3 px-4';
+                        let content = item[col.key];
+
+                        if (col.key === 'Fornecedor') {
+                            cell.className += ' text-left';
+                        } else {
+                            cell.className += ' text-right';
+                        }
+                        
+                        if (col.key === 'Estoque sem giro sobre o estoque total') {
+                            if (item['Estoque Custo'] > 0) {
+                                content = (item['Estoque sem giro'] / item['Estoque Custo']);
+                            } else {
+                                content = 0;
+                            }
+                            cell.textContent = formatPercentage(content);
+                        } else if (col.format === 'currency') {
+                            cell.textContent = formatCurrency(content);
+                        } else if (col.format === 'number') {
+                            cell.textContent = formatNumber(content);
+                        } else {
+                            cell.textContent = content;
+                        }
+                        
+                        row.appendChild(cell);
+                    });
+                    tableBody.appendChild(row);
+                });
+            }
+
+            function sortData(data, column, order) {
+                return data.sort((a, b) => {
+                    let valA = a[column];
+                    let valB = b[column];
+                    
+                    if (column === 'Estoque sem giro sobre o estoque total') {
+                         valA = (a['Estoque Custo'] > 0) ? (a['Estoque sem giro'] / a['Estoque Custo']) : 0;
+                         valB = (b['Estoque Custo'] > 0) ? (b['Estoque sem giro'] / b['Estoque Custo']) : 0;
+                    }
+
+                    if (typeof valA === 'string') {
+                        return order === 'asc' ? valA.localeCompare(valB) : valB.localeCompare(valA);
+                    }
+                    return order === 'asc' ? valA - valB : valB - valA;
+                });
+            }
+
+            const ddeColumns = [
+                { key: 'Fornecedor', format: 'string' },
+                { key: 'DDE', format: 'number' },
+                { key: 'Estoque Custo', format: 'currency' },
+                { key: 'Estoque sem giro', format: 'currency' },
+                { key: 'Estoque sem giro sobre o estoque total', format: 'percentage' },
+            ];
+            
+            function setupTableSorting(tableSelector, data, columns, initialSortCol, initialSortOrder) {
+                const headers = document.querySelectorAll(`${tableSelector} thead th`);
+                let currentSort = { column: initialSortCol, order: initialSortOrder };
+
+                const updateTable = () => {
+                    const sortedData = sortData([...data], currentSort.column, currentSort.order);
+                    const tableBodyId = tableSelector === '#ddeHighAnalysis table' ? 'ddeHighTableBody' : 'ddeEfficientTableBody';
+                    populateTable(tableBodyId, sortedData, columns);
+                    
+                    headers.forEach(h => {
+                       const indicator = h.querySelector('.sort-indicator');
+                       if(h.dataset.sort === currentSort.column) {
+                           indicator.textContent = currentSort.order === 'asc' ? '▲' : '▼';
+                           indicator.style.opacity = '1';
+                       } else {
+                           indicator.textContent = '';
+                           indicator.style.opacity = '0.5';
+                       }
+                    });
+                };
+                
+                headers.forEach(header => {
+                    header.addEventListener('click', () => {
+                        const column = header.dataset.sort;
+                        const order = (currentSort.column === column && currentSort.order === 'desc') ? 'asc' : 'desc';
+                        currentSort = { column, order };
+                        updateTable();
+                    });
+                });
+
+                updateTable();
+            }
+
+            function initDDEHighView() {
+                const filteredData = supplierData.slice(0, -1);
+                const ddeData = filteredData.filter(item => item.DDE > 90);
+                setupTableSorting('#ddeHighAnalysis table', ddeData, ddeColumns, 'DDE', 'desc');
+            }
+            
+            function initDDEEfficientView() {
+                const filteredData = supplierData.slice(0, -1);
+                const ddeData = filteredData.filter(item => item.DDE <= 90);
+                setupTableSorting('#ddeEfficientAnalysis table', ddeData, ddeColumns, 'DDE', 'asc');
+            }
+
+            async function callGemini(mode) {
+                if (!supplierData.length) {
+                    alert("Por favor, importe a planilha antes de gerar a análise.");
+                    return;
+                }
+                
+                aiOutput.style.display = 'block';
+                aiContent.style.display = 'none';
+                aiLoading.style.display = 'flex';
+
+                const highDDEData = supplierData.filter(item => item.DDE > 90);
+                const efficientDDEData = supplierData.filter(item => item.DDE <= 90);
+                const totalMetrics = supplierData[supplierData.length - 1];
+
+                let prompt = "";
+                let systemPrompt = "";
+
+                if (mode === 'summary') {
+                    systemPrompt = "Você é um analista de dados e de negócios. Sua tarefa é fornecer um resumo claro e conciso de alto nível sobre os principais dados de desempenho de fornecedores. Concentre-se nos pontos mais importantes, como o desempenho geral, os principais desafios (DDE alto e estoque sem giro) e os fornecedores que estão se saindo bem.";
+                    prompt = `Analise os dados de desempenho de fornecedores para a Casa das Tintas. O objetivo ideal de DDE (Prazo Médio de Estocagem) é de 90 dias.
+                    
+                    Dados Totais:
+                    - DDE Geral: ${formatNumber((totalMetrics['Estoque Custo'] / totalMetrics['Média Faturamento Custo']) * 30)} dias
+                    - Total em Estoque Sem Giro: ${formatCurrency(totalMetrics['Estoque sem giro'])}
+                    - Custo Total do Estoque: ${formatCurrency(totalMetrics['Estoque Custo'])}
+                    
+                    Fornecedores com DDE Alto (> 90 dias) e Estoque Sem Giro significativo:
+                    ${highDDEData.map(d => `- ${d.Fornecedor}: DDE de ${formatNumber(d.DDE)} dias. Estoque sem giro: ${formatCurrency(d['Estoque sem giro'])}`).join('\n')}
+                    
+                    Fornecedores com DDE Eficiente (<= 90 dias):
+                    ${efficientDDEData.map(d => `- ${d.Fornecedor}: DDE de ${formatNumber(d.DDE)} dias.`).join('\n')}
+                    
+                    Com base nessas informações, forneça um resumo para um gerente de negócios. O resumo deve ser em português, claro, objetivo e não conter jargões técnicos excessivos.`;
+                } else if (mode === 'recommendations') {
+                    systemPrompt = "Você é um consultor de gestão de estoque e um negociador experiente. Sua tarefa é analisar os dados de desempenho dos fornecedores e fornecer recomendações estratégicas e acionáveis para a gerência da empresa. Concentre-se em soluções para o estoque com DDE alto e sem giro.";
+                    prompt = `Analise os dados de desempenho de fornecedores para a Casa das Tintas, que tem uma meta de DDE de 90 dias.
+                    
+                    Fornecedores com DDE Alto (> 90 dias) e Estoque Sem Giro significativo:
+                    ${highDDEData.map(d => `- ${d.Fornecedor}: DDE de ${formatNumber(d.DDE)} dias. Estoque sem giro: ${formatCurrency(d['Estoque sem giro'])}`).join('\n')}
+                    
+                    Com base nessa análise, forneça três recomendações estratégicas e três táticas específicas para liquidar o estoque sem giro. Formate sua resposta com títulos claros e utilize uma linguagem profissional e direta.`;
+                }
+
+                try {
+                    const apiKey = "";
+                    const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-05-20:generateContent?key=${apiKey}`;
+
+                    const payload = {
+                        contents: [{ parts: [{ text: prompt }] }],
+                        systemInstruction: { parts: [{ text: systemPrompt }] },
+                        tools: [{ "google_search": {} }],
+                    };
+
+                    const response = await fetch(apiUrl, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(payload)
+                    });
+
+                    if (!response.ok) {
+                        const errorText = await response.text();
+                        throw new Error(`API returned an error: ${response.status} ${response.statusText}. Details: ${errorText}`);
+                    }
+
+                    const result = await response.json();
+                    const text = result.candidates?.[0]?.content?.parts?.[0]?.text;
+                    aiContent.textContent = text || 'Não foi possível gerar a análise. Tente novamente.';
+                } catch (error) {
+                    console.error("Erro na chamada da API Gemini:", error);
+                    aiContent.textContent = 'Ocorreu um erro ao conectar com o serviço de análise. Por favor, verifique sua conexão ou tente novamente mais tarde.';
+                } finally {
+                    aiLoading.style.display = 'none';
+                    aiContent.style.display = 'block';
+                }
+            }
+        });
+    </script>
+</body>
+</html>
